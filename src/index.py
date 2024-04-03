@@ -26,7 +26,7 @@ def getBIMarketData(symbol):
     return req.json()
 
 
-def getYaMarketData(symbol):
+def getYaMarketData(symbol,interval="1d"):
     t = str(time.time()).split(".")[0]
     header = {
     "Host": "query1.finance.yahoo.com",
@@ -44,24 +44,24 @@ def getYaMarketData(symbol):
     "Pragma": "no-cache",
     "Cache-Control": "no-cache",
     "domain-id": "it"}
-    req = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?symbol={symbol}&period1=0&period2={t}&useYfid=true&interval=1d&includePrePost=true&events=div|split|earn&lang=it-IT&region=IT&crumb=bZtbC8282C3&corsDomain=it.finance.yahoo.com", headers=header)
+    req = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?symbol={symbol}&period1=0&period2={t}&useYfid=true&interval={interval}&includePrePost=true&events=div|split|earn&lang=it-IT&region=IT&crumb=bZtbC8282C3&corsDomain=it.finance.yahoo.com", headers=header)
     return req.json()
 
-def calculateBIDelta(data, fromYear=0):
+def calculateBIDelta(data, fromYear=0, dayStep=1):
     deltas = []
-    for i in range(1, len(data)):
+    for i in range(dayStep, len(data), dayStep):
         if(int(data[i]["time"][:4])>=fromYear):
-            deltas.append({"time":data[i]["time"], "deltaPerc":round((data[i]["price"]-data[i-1]["price"])*100/data[i-1]["price"], 7),"delta":(data[i]["price"]-data[i-1]["price"]), "value":data[i]["price"]})
+            deltas.append({"time":data[i]["time"], "deltaPerc":round((data[i]["price"]-data[i-dayStep]["price"])/data[i-dayStep]["price"], 7),"delta":(data[i]["price"]-data[i-dayStep]["price"]), "value":data[i]["price"]})
     return deltas
 
-def calculateYaDelta(data, fromYear=0):
+def calculateYaDelta(data, fromYear=0, dayStep=1):
     deltas = []
     x=data["chart"]["result"][0]["timestamp"]
 
     y=data["chart"]["result"][0]["indicators"]["quote"][0]
-    for i in range(1, len(x)):
-        if(x[i] and y["open"][i] and int(str(datetime.date.fromtimestamp(x[i]))[:4])>=fromYear):
-            deltas.append({"time":str(datetime.date.fromtimestamp(x[i])), "deltaPerc":round((y["close"][i]-y["open"][i])*100/y["open"][i], 7),"delta":(y["close"][i]-y["open"][i]), "value":y["close"][i]})
+    for i in range(dayStep, len(x), dayStep):
+        if(x[i] and y["close"][i] and x[i-dayStep] and y["close"][i-dayStep] and int(str(datetime.date.fromtimestamp(x[i]))[:4])>=fromYear):
+            deltas.append({"time":str(datetime.date.fromtimestamp(x[i])), "deltaPerc":round((y["close"][i]-y["close"][i-dayStep])/y["close"][i-dayStep], 7),"delta":(y["close"][i]-y["close"][i-dayStep]), "value":y["close"][i]})
     return deltas
 
 
@@ -72,31 +72,41 @@ def jsonToXlsx(data, jsonFile="jsonFile.json", excelFile="excelFile.xlsx"):
     dataPd = pandas.read_json(DATA_DIR+jsonFile)
     return dataPd.to_excel(DATA_DIR+excelFile)
 
+def summt(d0, a0, d1, a1):
+        s=0
+        for i in range(len(d0)):
+            s+=(d0[i]-a0)*(d1[i]-a1)
+        return s
 
 class MarketMatrix:
 
     def __init__(self, marketList, indexName):
         self.marketList = marketList
-        mat = [[0.]*len(marketList)]*len(marketList)
-        lst = [0.]*len(marketList)
-        self.correlationMarketMatrix = np.array(mat)
-        self.betaMarketMatrix = np.array(mat)
-        self.correlationIndexList = np.array(lst)
-        self.betaIndexList = np.array(lst)
+        #mat = [[0.]*len(marketList)]*len(marketList)
+        #mat = [[0.]*len(marketList) for n in range(len(marketList))]
+        #lst = [0.]*len(marketList)
+        self.correlationMarketMatrix = np.array([[0.]*len(marketList) for n in range(len(marketList))])
+        self.betaMarketMatrix = np.array([[0.]*len(marketList) for n in range(len(marketList))])
+        self.correlationIndexList = np.array([0.]*len(marketList))
+        self.betaIndexList = np.array([0.]*len(marketList))
         self.marketData = {}
-        self.indexData = []
+        self.indexData = {}
         self.corrispondences=[]
         self.indexName = indexName
         self.CORRISPONDECE_THRESHOLD = 0.6
 
         
-    def loadMarketData(self, fromYear=0):
+    def loadMarketData(self, fromYear=0, dayStep=1):
         for m in self.marketList:
-            self.marketData[m] = calculateBIDelta(getBIMarketData(m), fromYear)
-            print(f'getting {m}, l: {len(self.marketData[m])}')
+            print(f'getting {m}')
+            self.marketData[m] = {}
+            self.marketData[m]["d"] = calculateYaDelta(getYaMarketData(m, "1d"), fromYear, dayStep)
+            self.marketData[m]["wk"] = calculateYaDelta(getYaMarketData(m, "1wk"), fromYear, dayStep)
 
-    def loadIndexData(self, fromYear=0):
-        self.indexData = calculateYaDelta(getYaMarketData(self.indexName))
+
+    def loadIndexData(self, fromYear=0, dayStep=1):
+        self.indexData["d"] = calculateYaDelta(getYaMarketData(self.indexName, "1d"), fromYear, dayStep)
+        self.indexData["wk"] = calculateYaDelta(getYaMarketData(self.indexName, "1wk"), fromYear, dayStep)
 
             
     def calculateMarketCorrelation(self):
@@ -106,10 +116,11 @@ class MarketMatrix:
             for m1 in range(marketNum):
                 m1Name = self.marketList[m1]
                 if(m1!=m0):
-                    if(len(self.marketData[m0Name]) > 0 and len(self.marketData[m1Name]) > 0):
-                        dataLen = min(len(self.marketData[m0Name]), len(self.marketData[m1Name]))
-                
-                        self.correlationMarketMatrix[m0][m1] = round(np.corrcoef([np.array([v["value"] for v in self.marketData[m0Name][-dataLen:]]), np.array([v["value"] for v in self.marketData[m1Name][-dataLen:]])])[0][1], 3)
+                    if(len(self.marketData[m0Name]["d"]) > 0 and len(self.marketData[m1Name]["d"]) > 0):
+                        m0Times = [v["time"] for v in self.marketData[m0Name]["d"]]
+                        m1Times = [v["time"] for v in self.marketData[m1Name]["d"]]
+                        commonTimes = [v for v in m1Times if v in m0Times]
+                        self.correlationMarketMatrix[m0][m1] = self.calculateCorrelation([v["value"] for v in self.marketData[m0Name]["d"] if v["time"] in commonTimes], [v["value"] for v in self.marketData[m1Name]["d"] if v["time"] in commonTimes])
                     else:
                         self.correlationMarketMatrix[m0][m1] = 0
                 else:
@@ -121,9 +132,11 @@ class MarketMatrix:
             m0Name = self.marketList[m0]
             for m1 in range(marketNum):
                 m1Name = self.marketList[m1]
-                if(len(self.marketData[m0Name]) > 0 and len(self.marketData[m1Name]) > 0):
-                    dataLen = min(len(self.marketData[m0Name]), len(self.marketData[m1Name]))
-                    self.betaMarketMatrix[m0][m1] = round(np.cov([np.array([v["deltaPerc"] for v in self.marketData[m0Name][-dataLen:]]), np.array([v["deltaPerc"] for v in self.marketData[m1Name][-dataLen:]])])[0][1]/np.cov([np.array([v["deltaPerc"] for v in self.marketData[m1Name][-dataLen:]]), np.array([v["deltaPerc"] for v in self.marketData[m1Name][-dataLen:]])])[0][1], 3)
+                if(len(self.marketData[m0Name]["wk"]) > 0 and len(self.marketData[m1Name]["wk"]) > 0):
+                    m0Times = [v["time"] for v in self.marketData[m0Name]["wk"]]
+                    m1Times = [v["time"] for v in self.marketData[m1Name]["wk"]]
+                    commonTimes = [v for v in m1Times if v in m0Times]
+                    self.betaMarketMatrix[m0][m1] = self.calculateBeta([v["deltaPerc"] for v in self.marketData[m0Name]["wk"] if v["time"] in commonTimes], [v["deltaPerc"] for v in self.marketData[m1Name]["wk"] if v["time"] in commonTimes])
                 else:
                     self.betaMarketMatrix[m0][m1] = 0
 
@@ -132,25 +145,28 @@ class MarketMatrix:
         marketNum = len(self.marketList)
         for m0 in range(marketNum):
             m0Name = self.marketList[m0]
-            if(len(self.marketData[m0Name]) > 0):
-                dataLen = min(len(self.marketData[m0Name]), len(self.indexData))
-    
-                self.correlationIndexList[m0] = round(np.corrcoef([np.array([v["value"] for v in self.marketData[m0Name][-dataLen:]]), np.array([v["value"] for v in self.indexData[-dataLen:]])])[0][1], 3)
+            if(len(self.marketData[m0Name]["d"]) > 0):    
+                m0Times = [v["time"] for v in self.marketData[m0Name]["d"]]
+                indxTimes = [v["time"] for v in self.indexData["d"]]
+                commonTimes = [v for v in indxTimes if v in m0Times]
+                self.correlationIndexList[m0] = self.calculateCorrelation([v["value"] for v in self.marketData[m0Name]["d"] if v["time"] in commonTimes], [v["value"] for v in self.indexData["d"] if v["time"] in commonTimes])
             else:
                 self.correlationIndexList[m0] = -2
 
+    
 
-    def calulateBeta(self, data0, data1):
-        s1 = 0
-        c=0
-        for d in data0:
-            if(d!=0):
-                c+=1
-                s1+=d
-        avg0 = s1/c
-        avg1 = sum(data1)/len(data1)
-        print("index",avg0)
-        print("title",avg1)
+
+    def calculateCorrelation(self, data0, data1):
+        av0 = sum(data0)/len(data0)
+        av1 = sum(data1)/len(data1)
+        return summt(data0, av0, data1, av1) / math.sqrt(summt(data0, av0, data0, av0)*summt(data1, av1, data1, av1))
+        
+
+
+    def calculateBeta(self, data0, data1):
+        av0 = sum(data0)/len(data0)
+        av1 = sum(data1)/len(data1)
+        return summt(data0, av0, data1, av1) / summt(data1, av1, data1, av1)
 
 
     
@@ -158,16 +174,11 @@ class MarketMatrix:
         marketNum = len(self.marketList)
         for m0 in range(marketNum):
             m0Name = self.marketList[m0]
-            if(len(self.marketData[m0Name]) > 0):
-                dataLen = min(len(self.marketData[m0Name]), len(self.indexData))
-                mat = np.cov([np.array([v["deltaPerc"] for v in self.indexData[-dataLen:]]), np.array([v["deltaPerc"] for v in self.marketData[m0Name][-dataLen:]])])
-                den = np.cov([np.array([v["deltaPerc"] for v in self.indexData[-dataLen:]]), np.array([v["deltaPerc"] for v in self.indexData[-dataLen:]])])[0][0]
-                print(mat[0][0]/den)
-                print(mat[0][1]/den)
-                print(mat[1][1]/den)
-                print(self.calulateBeta([v["deltaPerc"] for v in self.indexData], [v["deltaPerc"] for v in self.marketData[m0Name][-dataLen:]]))
-                print("-------------------------------------")
-                self.betaIndexList[m0] = round(np.cov([np.array([v["deltaPerc"] for v in self.indexData[-dataLen:]]), np.array([v["deltaPerc"] for v in self.marketData[m0Name][-dataLen:]])])[0][1]/np.cov([np.array([v["deltaPerc"] for v in self.indexData[-dataLen:]]), np.array([v["deltaPerc"] for v in self.indexData[-dataLen:]])])[0][1], 3)
+            if(len(self.marketData[m0Name]["wk"]) > 0):
+                m0Times = [v["time"] for v in self.marketData[m0Name]["wk"]]
+                indxTimes = [v["time"] for v in self.indexData["wk"]]
+                commonTimes = [v for v in indxTimes if v in m0Times]
+                self.betaIndexList[m0] = self.calculateBeta([v["deltaPerc"] for v in self.marketData[m0Name]["wk"] if v["time"] in commonTimes], [v["deltaPerc"] for v in self.indexData["wk"] if v["time"] in commonTimes])
             else:
                 self.betaIndexList[m0] = 0
 
@@ -186,9 +197,9 @@ class MarketMatrix:
                         self.corrispondences.append({"title1":m0Name, "title2":self.indexName, "correlation":self.correlationIndexList[m0], "beta":self.betaIndexList[m0]})
   
 
-    def loadData(self, fromYear=0):
-        self.loadMarketData(fromYear)
-        self.loadIndexData()
+    def loadData(self, fromYear=0, dayStep=1):
+        self.loadMarketData(fromYear,dayStep)
+        self.loadIndexData(fromYear,dayStep)
         self.calculateMarketCorrelation()
         self.calculateMarketBetas()
         self.calculateIndexCorrelation()
@@ -205,17 +216,24 @@ class MarketMatrix:
 #print(getUSMarketData("TIME_SERIES_DAILY", "IBM", "outputsize=full"))
     
 MARKET_NUM = 5
-FROM_YEAR = 0
+FROM_YEAR = 2019
+DAY_STEP = 1
 
 
-fileIn = open("resources/marketList.txt", "r")
+fileIn = open("resources/marketListCode.txt", "r")
 l = fileIn.read().split("\n")
 fileIn.close()
 mm = MarketMatrix(l[:MARKET_NUM], "FTSEMIB.MI")
-mm.loadData(FROM_YEAR)
-jsonToXlsx(mm.indexData, excelFile="indexData.xlsx")
+mm.loadData(FROM_YEAR, DAY_STEP)
+jsonToXlsx(mm.indexData["d"], excelFile="indexDataDalily.xlsx")
+jsonToXlsx(mm.marketData["AZM.MI"]["d"], excelFile="azimutDataDaily.xlsx")
+jsonToXlsx(mm.indexData["wk"], excelFile="indexDataWeekly.xlsx")
+jsonToXlsx(mm.marketData["AZM.MI"]["wk"], excelFile="azimutDataWeekly.xlsx")
+jsonToXlsx(mm.corrispondences, excelFile="validTitles.xlsx")
 
-print(mm.betaIndexList)
+print("correlations: ", mm.correlationIndexList)
+print("betas: ",mm.betaIndexList)
+print("valid: ", mm.corrispondences)
 
 fileOut = open("data/matrix.txt", "w")
 fileOut.write("coef corr\n")

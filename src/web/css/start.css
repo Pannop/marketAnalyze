@@ -1,0 +1,23 @@
+.topContainer{
+    display: flex;
+    width: 90%;
+    height: 600px;
+    justify-content: space-between;
+}
+
+#marketListChecks{
+    padding: 20px;
+    min-width: 300px;
+    border-radius: 10px;
+    margin-left: 20px;
+    margin-top: 20px;
+    border: 1px solid gray;
+    box-shadow: 2px black;
+    height: 100%;
+    overflow-y: scroll;
+}
+
+
+#marketChart{
+    width: 100%;
+}
